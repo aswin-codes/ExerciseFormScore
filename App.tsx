@@ -4,12 +4,14 @@ import { createStaticNavigation } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import HomeScreen from './screens/HomeScreen';
 import ElbowAngleScreen from './screens/ElbowAngle';
+import VideoAnalysisScreen from './screens/VideoAnalysisScreen';
 
 const RootStack = createNativeStackNavigator({
   initialRouteName: 'Home',
   screens: {
     Home: HomeScreen,
-    Elbow: ElbowAngleScreen
+    Elbow: ElbowAngleScreen,
+    VideoAnalysis: VideoAnalysisScreen,
   },
 });
 
