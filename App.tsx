@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import HomeScreen from './screens/HomeScreen';
 import ElbowAngleScreen from './screens/ElbowAngle';
 import VideoAnalysisScreen from './screens/VideoAnalysisScreen';
+import BicepCurlFormScreen from './screens/FormScoreScreen';
 
 const RootStack = createNativeStackNavigator({
   initialRouteName: 'Home',
@@ -12,6 +13,7 @@ const RootStack = createNativeStackNavigator({
     Home: HomeScreen,
     Elbow: ElbowAngleScreen,
     VideoAnalysis: VideoAnalysisScreen,
+    FormScore : BicepCurlFormScreen
   },
 });
 

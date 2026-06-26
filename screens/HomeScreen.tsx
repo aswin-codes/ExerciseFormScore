@@ -9,6 +9,7 @@ const HomeScreen = () => {
       <Text style={{ fontSize: 24, fontWeight: 'bold' }}>FormScore</Text>
       <Button title="Real-time Elbow Angle" onPress={() => navigation.navigate('Elbow')} />
       <Button title="Video Analysis" onPress={() => navigation.navigate('VideoAnalysis')} />
+      <Button title="Form Score" onPress={() => navigation.navigate('FormScore')} />
     </View>
   )
 }
