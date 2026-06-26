@@ -1,5 +1,7 @@
 const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
-//const exclusionList = require('metro-config/src/defaults/exclusionList');
+
+const defaultConfig = getDefaultConfig(__dirname);
+
 /**
  * Metro configuration
  * https://reactnative.dev/docs/metro
@@ -8,11 +10,11 @@ const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
  */
 const config = {
   resolver: {
-      assetExts: [...getDefaultConfig(__dirname).resolver.assetExts, 'tflite'],
-      // blockList: exclusionList([
-      //   /.*\/node_modules\/react-native-fast-tflite\/android\/.*/,
-      // ]),
-    },
+    assetExts: [...defaultConfig.resolver.assetExts, 'tflite'],
+    blockList: [
+      /[\/\\]node_modules[\/\\]react-native-fast-tflite[\/\\]android[\/\\]/,
+    ].concat(defaultConfig.resolver.blockList || []),
+  },
 };
 
-module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+module.exports = mergeConfig(defaultConfig, config);

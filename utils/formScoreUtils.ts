@@ -1,18 +1,4 @@
-// formScoreUtils.ts
-//
-// Pure scoring logic for comparing a user's exercise video against an expert's.
-// No React Native imports here on purpose — this can be unit tested in plain
-// Node/Jest, and the same functions will work for every future exercise, not
-// just the bicep curl.
-//
-// Pipeline: FramePose[] (per-frame keypoints) -> AngleSeries (per-joint angle
-// over time) -> DTW alignment path -> per-joint + overall score.
-//
-// ASSUMPTION (per current product decision): both videos are filmed from a
-// similar camera angle and distance. Angles are compared directly in 2D —
-// there is no viewpoint correction here. If that assumption changes later,
-// only computeAngleSeries (and what feeds it) needs to change; DTW and
-// scoring are agnostic to where the angles came from.
+
 
 export type Point2D = { x: number; y: number; score: number };
 
@@ -144,7 +130,70 @@ export function computeAngleSeries(frames: FramePose[], config: ExerciseConfig):
     }
   }
 
+  // --- Interpolate low-confidence gaps ---
+  for (const joint of config.joints) {
+    const jointAngles = angles[joint.name];
+    const jointConf = confidences[joint.name];
+    
+    let lastValidIdx = -1;
+    for (let i = 0; i < jointAngles.length; i++) {
+      if (jointConf[i] >= MIN_CONFIDENCE) {
+        if (lastValidIdx !== -1 && i - lastValidIdx > 1) {
+          // Linearly interpolate between lastValidIdx and i
+          const startVal = jointAngles[lastValidIdx];
+          const endVal = jointAngles[i];
+          const steps = i - lastValidIdx;
+          for (let j = 1; j < steps; j++) {
+            jointAngles[lastValidIdx + j] = startVal + (endVal - startVal) * (j / steps);
+            jointConf[lastValidIdx + j] = MIN_CONFIDENCE; // Boost conf so it's valid
+          }
+        } else if (lastValidIdx === -1 && i > 0) {
+          // If array starts with low confidence, backfill with the first valid value
+          for (let j = 0; j < i; j++) {
+            jointAngles[j] = jointAngles[i];
+            jointConf[j] = MIN_CONFIDENCE;
+          }
+        }
+        lastValidIdx = i;
+      }
+    }
+    
+    // If array ends with low confidence, forward-fill with the last valid value
+    if (lastValidIdx !== -1 && lastValidIdx < jointAngles.length - 1) {
+      for (let j = lastValidIdx + 1; j < jointAngles.length; j++) {
+        jointAngles[j] = jointAngles[lastValidIdx];
+        jointConf[j] = MIN_CONFIDENCE;
+      }
+    }
+  }
+
   return { side, tSec, angles, confidences };
+}
+
+export function pearsonCorrelation(x: number[], y: number[]): number {
+  if (x.length !== y.length || x.length === 0) return 0;
+  
+  const n = x.length;
+  const sumX = x.reduce((a, b) => a + b, 0);
+  const sumY = y.reduce((a, b) => a + b, 0);
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+  
+  let num = 0;
+  let denX = 0;
+  let denY = 0;
+  
+  for (let i = 0; i < n; i++) {
+    const dx = x[i] - meanX;
+    const dy = y[i] - meanY;
+    num += dx * dy;
+    denX += dx * dx;
+    denY += dy * dy;
+  }
+  
+  const den = Math.sqrt(denX * denY);
+  if (den === 0) return 0;
+  return num / den;
 }
 
 // ---- DTW alignment ----
@@ -164,22 +213,14 @@ function frameCost(
   let totalWeight = 0;
 
   for (const joint of config.joints) {
-    const uConf = userAngles.confidences[joint.name][i];
-    const eConf = expertAngles.confidences[joint.name][j];
-    const confWeight = Math.min(uConf, eConf);
-    if (confWeight < MIN_CONFIDENCE) continue; // too unreliable to compare here
-
     const uAngle = userAngles.angles[joint.name][i];
     const eAngle = expertAngles.angles[joint.name][j];
     const normDiff = Math.abs(uAngle - eAngle) / joint.toleranceDeg;
 
-    weightedDiff += joint.weight * confWeight * normDiff;
-    totalWeight += joint.weight * confWeight;
+    weightedDiff += joint.weight * normDiff;
+    totalWeight += joint.weight;
   }
 
-  // If nothing was reliably comparable at this pair of frames, return a
-  // neutral cost rather than 0 — a free pass here would bias the alignment
-  // path toward pairs with bad data instead of good matches.
   if (totalWeight === 0) return 1;
   return weightedDiff / totalWeight;
 }
@@ -236,46 +277,49 @@ export function scoreFromPath(
   expertAngles: AngleSeries,
   path: Array<[number, number]>,
 ): { overallScore: number; jointScores: Record<string, number> } {
-  const weightedDiffSum: Record<string, number> = {};
-  const weightSum: Record<string, number> = {};
-  for (const joint of config.joints) {
-    weightedDiffSum[joint.name] = 0;
-    weightSum[joint.name] = 0;
-  }
-
-  for (const [i, j] of path) {
-    for (const joint of config.joints) {
-      const uConf = userAngles.confidences[joint.name][i];
-      const eConf = expertAngles.confidences[joint.name][j];
-      const confWeight = Math.min(uConf, eConf);
-      if (confWeight < MIN_CONFIDENCE) continue;
-
-      const uAngle = userAngles.angles[joint.name][i];
-      const eAngle = expertAngles.angles[joint.name][j];
-      const normDiff = Math.abs(uAngle - eAngle) / joint.toleranceDeg;
-
-      weightedDiffSum[joint.name] += confWeight * normDiff;
-      weightSum[joint.name] += confWeight;
-    }
-  }
-
   const jointScores: Record<string, number> = {};
   let overallWeighted = 0;
   let overallWeight = 0;
 
   for (const joint of config.joints) {
-    const totalWeight = weightSum[joint.name];
-    if (totalWeight < 1e-6) {
-      // Never had enough confident data for this joint — report 0 but don't
-      // let it drag down the overall score, since that would punish the
-      // user for a tracking failure rather than a form issue.
+    const alignedUserAngles: number[] = [];
+    const alignedExpertAngles: number[] = [];
+    
+    let sumNormDiff = 0;
+    
+    for (const [i, j] of path) {
+      const uAngle = userAngles.angles[joint.name][i];
+      const eAngle = expertAngles.angles[joint.name][j];
+      
+      alignedUserAngles.push(uAngle);
+      alignedExpertAngles.push(eAngle);
+      
+      const normDiff = Math.abs(uAngle - eAngle) / joint.toleranceDeg;
+      sumNormDiff += normDiff;
+    }
+    
+    const pathLength = path.length;
+    if (pathLength === 0) {
       jointScores[joint.name] = 0;
       continue;
     }
-    const meanNormDiff = weightedDiffSum[joint.name] / totalWeight;
-    const score = 100 * Math.max(0, 1 - meanNormDiff);
-    jointScores[joint.name] = Math.round(score);
-    overallWeighted += joint.weight * score;
+    
+    // 1. Range of Motion Score (Absolute Difference)
+    const meanNormDiff = sumNormDiff / pathLength;
+    let romScore = 100 * Math.max(0, 1 - meanNormDiff);
+    
+    // 2. Shape Score (Pearson Correlation)
+    let shapeScore = 0;
+    const r = pearsonCorrelation(alignedUserAngles, alignedExpertAngles);
+    if (r > 0) {
+      shapeScore = r * 100;
+    }
+    
+    // Blend 50/50 for the final score
+    const finalJointScore = Math.round((romScore * 0.5) + (shapeScore * 0.5));
+    
+    jointScores[joint.name] = finalJointScore;
+    overallWeighted += joint.weight * finalJointScore;
     overallWeight += joint.weight;
   }
 
@@ -329,9 +373,17 @@ export function computeFormScore(
   const userAngles = computeAngleSeries(userFrames, config);
   const expertAngles = computeAngleSeries(expertFrames, config);
 
+  console.log('--- FORM SCORE LOGS ---');
+  console.log('User Angles:', JSON.stringify(userAngles.angles, null, 2));
+  console.log('Expert Angles:', JSON.stringify(expertAngles.angles, null, 2));
+
   const path = runDTW(config, userAngles, expertAngles);
   const { overallScore, jointScores } = scoreFromPath(config, userAngles, expertAngles, path);
   const chart = buildAlignedChartSeries(userAngles, expertAngles, path, config.joints[0].name);
+
+  console.log('Overall Score:', overallScore);
+  console.log('Joint Scores:', JSON.stringify(jointScores, null, 2));
+  console.log('-----------------------');
 
   return {
     overallScore,
